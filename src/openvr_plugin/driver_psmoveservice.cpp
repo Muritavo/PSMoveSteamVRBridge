@@ -185,7 +185,7 @@ static const char *k_VRTouchpadDirectionNames[k_max_vr_touchpad_directions] = {
 // Indicator of how many extra frames needs to be sent after touch pressed release
 //==================================================================================================
 
-static uint8_t k_TouchpadTouched_Count[vr::k_unMaxTrackedDeviceCount] = { };
+static int8_t k_TouchpadTouched_Count[vr::k_unMaxTrackedDeviceCount] = { };
 
 //==================================================================================================
 // Globals
@@ -2579,7 +2579,7 @@ void CPSMoveControllerLatest::UpdateControllerState()
 				PSM_ResetControllerOrientationAsync(m_PSMControllerView->ControllerID, k_psm_quaternion_identity, nullptr);
 				m_bResetPoseRequestSent = true;
 			}
-			else 
+			else
 			{
 				// Process all the button mappings 
 				// ------
@@ -2596,27 +2596,30 @@ void CPSMoveControllerLatest::UpdateControllerState()
 				UpdateControllerStateFromPsMoveButtonState(k_EPSControllerType_Move, k_EPSButtonID_Triangle, clientView.TriangleButton, &NewState);
 				UpdateControllerStateFromPsMoveButtonState(k_EPSControllerType_Move, k_EPSButtonID_Trigger, clientView.TriggerButton, &NewState);
 
-				//First theory (The engine needs a touchpad touched signal after touchpad pressed) 
-				//Before: Only if I hold the 'touchpad_touched' while pressing the 'touch_pressed' works
-				//Result: Now the button needs to be pressed a lot of times but works, if the button is hold for a little longer, it increases the chance of success
-				//OBS: Changing the smount of frames sent after 'touchpad_pressed' doesn't seem to affect the final result, indicating that there is something I'm not considering
+				//Third theory (Most successful proofs) It seems that along the last touched button signal after the pressed signal, the controller need to receive a touched signal BEFORE the pressed.
+				//Result: It worked (kinda...). The input sends 7 touched signals before and after pressed signal.
+				//The problem is, it works as a touched during it, so it might cause some confusion, I'm still optimizing it. 
+				//Maybe there is a way to know when the controller input has been read by the game, allowing to send a touched signal in a single frame only.
 
-				//if (m_ControllerState.ulButtonPressed & s_kTouchpadButtonMask) {
-				//	k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] = 4; //Sets a flag that count how many touched signal frames need to be sent
-				//}
-				//else if (m_ControllerState.ulButtonTouched & s_kTouchpadButtonMask && (k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] > 0)) {
-				//		k_TouchpadTouched_Count[m_PSMControllerView->ControllerID]--; //Decrement the counter
-				//		NewState.ulButtonTouched |= s_kTouchpadButtonMask; //Send touched signal
-				//}
+				//If the pressed signal is sent without previous touched, mark it needs to send a touched signal
+				if (NewState.ulButtonPressed & s_kTouchpadButtonMask && !(m_ControllerState.ulButtonTouched & s_kTouchpadButtonMask)) {
+					DriverLog("Esse log deve ser executado apenas 1 vez\n");
+					k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] = -7;
+				}
 
-				//Second theory, It seems that the Input Emulator Deadzone fix, kind of solves the problem by setting the touchpad_pressed signal an offseting the axis a little, as it seems that the engine doesn't catch bottom presses with offset 0
-				//Result:
-				//OBS: I do believe it'll work as the first solution doesn't works when pressed too fast, it increase chance of success if the buttons is pressed for a few moments before releasing, leading to beleive that it works because of the offset that is calculated while the button is hold.
+				if (k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] < 0) {
+					//If needs to send touchpad touched
+					NewState.ulButtonTouched |= s_kTouchpadButtonMask; //Turn on the touched touchpad signal
+					NewState.ulButtonPressed &= ~s_kTouchpadButtonMask; //Turn off the pressed touchpad signal
+					k_TouchpadTouched_Count[m_PSMControllerView->ControllerID]++;
+				}
+				else if (m_ControllerState.ulButtonPressed & s_kTouchpadButtonMask) {
+					k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] = 7;
+				}
 
-				//If touchpad was released sends the touch signal with the y and x offset by 0.01
-				if (m_ControllerState.ulButtonPressed & s_kTouchpadButtonMask && !(NewState.ulButtonPressed & s_kTouchpadButtonMask)) {
-					NewState.ulButtonTouched |= s_kTouchpadButtonMask; // Sets the touched signal
-					NewState.rAxis[0].x = NewState.rAxis[0].y = 0.01f; //Sets both axis offset by 0.001f
+				if (k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] > 0) {
+					NewState.ulButtonTouched |= s_kTouchpadButtonMask; //Send touched signal every previous pressed signal
+					k_TouchpadTouched_Count[m_PSMControllerView->ControllerID]--; //Decrement the counter
 				}
 
 				// Handle buttons/virtual touchpad buttons on the psnavi
@@ -2821,7 +2824,7 @@ void CPSMoveControllerLatest::UpdateControllerState()
 				// Update the battery charge state
 				UpdateBatteryChargeState(m_PSMControllerView->ControllerState.PSMoveState.BatteryValue);
 			}
-        } break;
+        } break; 
     case PSMController_DualShock4:
         {
             const PSMDualShock4 &clientView = m_PSMControllerView->ControllerState.PSDS4State;
@@ -3048,7 +3051,7 @@ void CPSMoveControllerLatest::UpdateControllerState()
     SendButtonUpdates( &vr::IVRServerDriverHost::TrackedDeviceButtonUnpressed, ulChangedPressed & ~NewState.ulButtonPressed );
     SendButtonUpdates( &vr::IVRServerDriverHost::TrackedDeviceButtonUntouched, ulChangedTouched & ~NewState.ulButtonTouched );
 
-    m_ControllerState = NewState;
+    m_ControllerState = NewState;	
 }
 
 void CPSMoveControllerLatest::UpdateControllerStateFromPsMoveButtonState(
