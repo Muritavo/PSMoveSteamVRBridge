@@ -138,7 +138,7 @@ protected:
     unsigned short m_hardware_revision;
 };
 
-class CPSMoveControllerLatest : public CPSMoveTrackedDeviceLatest, public vr::IVRControllerComponent
+class CPSMoveControllerLatest : public CPSMoveTrackedDeviceLatest
 {
 public:
 	// Mirrors definition in PSMControllerType
@@ -239,9 +239,9 @@ public:
     virtual void Deactivate() override;
     virtual void *GetComponent(const char *pchComponentNameAndVersion) override;
 
-    // Implementation of vr::IVRControllerComponent
-    virtual vr::VRControllerState_t GetControllerState() override;
-    virtual bool TriggerHapticPulse( uint32_t unAxisId, uint16_t usPulseDurationMicroseconds ) override;
+    //// Implementation of vr::IVRControllerComponent
+    //virtual vr::VRControllerState_t GetControllerState() override;
+    //virtual bool TriggerHapticPulse( uint32_t unAxisId, uint16_t usPulseDurationMicroseconds ) override;
 
     // Overridden Implementation of CPSMoveTrackedDeviceLatest
     virtual vr::ETrackedDeviceClass GetTrackedDeviceClass() const override { return vr::TrackedDeviceClass_Controller; }
@@ -257,6 +257,15 @@ public:
 	inline PSMControllerType getPSMControllerType() const { return m_PSMControllerType; }
 
 private:
+	//Input components
+	vr::VRInputComponentHandle_t aButton;
+	vr::VRInputComponentHandle_t xAxis;
+	vr::VRInputComponentHandle_t yAxis;
+	vr::VRInputComponentHandle_t trackpadPressed;
+	vr::VRInputComponentHandle_t trackpadTouched;
+	vr::VRInputComponentHandle_t trigger;
+
+
     typedef void ( vr::IVRServerDriverHost::*ButtonUpdate )( uint32_t unWhichDevice, vr::EVRButtonId eButtonId, double eventTimeOffset );
 
     void SendButtonUpdates( ButtonUpdate ButtonEvent, uint64_t ulMask );
