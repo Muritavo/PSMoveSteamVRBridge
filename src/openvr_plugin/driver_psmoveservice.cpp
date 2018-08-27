@@ -2324,6 +2324,8 @@ vr::EVRInitError CPSMoveControllerLatest::Activate(vr::TrackedDeviceIndex_t unOb
 		{
 			vr::CVRPropertyHelpers *properties= vr::VRProperties();
 
+			properties->SetStringProperty(m_ulPropertyContainer, vr::Prop_ControllerType_String, "vive_controller");
+			properties->SetStringProperty(m_ulPropertyContainer, vr::Prop_LegacyInputProfile_String, "vive_controller");
 			properties->SetStringProperty(m_ulPropertyContainer, vr::Prop_NamedIconPathDeviceOff_String, "{psmove}controller_status_off.png");
 			properties->SetStringProperty(m_ulPropertyContainer, vr::Prop_NamedIconPathDeviceSearching_String, "{psmove}controller_status_ready.png");
 			properties->SetStringProperty(m_ulPropertyContainer, vr::Prop_NamedIconPathDeviceSearchingAlert_String, "{psmove}controller_status_ready_alert.png");
@@ -2393,12 +2395,15 @@ vr::EVRInitError CPSMoveControllerLatest::Activate(vr::TrackedDeviceIndex_t unOb
 
 			//Register the input components
 			vr::IVRDriverInput *input = vr::VRDriverInput();
-			input->CreateBooleanComponent(m_ulPropertyContainer, "/input/a/click", &aButton);
+			input->CreateBooleanComponent(m_ulPropertyContainer, "/input/grip/click", &grip);
+			input->CreateBooleanComponent(m_ulPropertyContainer, "/input/system/click", &systemPress);
+			input->CreateBooleanComponent(m_ulPropertyContainer, "/input/application_menu", &applicationMenu);
+			input->CreateBooleanComponent(m_ulPropertyContainer, "/input/trigger/click", &triggerPress);
+			input->CreateScalarComponent(m_ulPropertyContainer, "/input/trigger/value", &trigger, vr::EVRScalarType::VRScalarType_Absolute, vr::EVRScalarUnits::VRScalarUnits_NormalizedOneSided);
 			input->CreateScalarComponent(m_ulPropertyContainer, "/input/trackpad/x", &xAxis, vr::EVRScalarType::VRScalarType_Absolute, vr::EVRScalarUnits::VRScalarUnits_NormalizedTwoSided);
 			input->CreateScalarComponent(m_ulPropertyContainer, "/input/trackpad/y", &yAxis, vr::EVRScalarType::VRScalarType_Absolute, vr::EVRScalarUnits::VRScalarUnits_NormalizedTwoSided);
 			input->CreateBooleanComponent(m_ulPropertyContainer, "/input/trackpad/click", &trackpadPressed);
 			input->CreateBooleanComponent(m_ulPropertyContainer, "/input/trackpad/touch", &trackpadTouched);
-			input->CreateScalarComponent(m_ulPropertyContainer, "/input/trigger/value", &trigger, vr::EVRScalarType::VRScalarType_Absolute, vr::EVRScalarUnits::VRScalarUnits_NormalizedOneSided);
 		}
     }
 
@@ -2460,7 +2465,7 @@ void CPSMoveControllerLatest::SendButtonUpdates( ButtonUpdate ButtonEvent, uint6
 
 void CPSMoveControllerLatest::UpdateControllerState()
 {
-	static vr::IVRDriverInput *input = vr::VRDriverInput();
+	vr::IVRDriverInput *input = vr::VRDriverInput();
     static const uint64_t s_kTouchpadButtonMask = vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Touchpad);
 
     assert(m_PSMControllerView != nullptr);
@@ -2608,7 +2613,7 @@ void CPSMoveControllerLatest::UpdateControllerState()
 
 				//If the pressed signal is sent without previous touched, mark it needs to send a touched signal
 				if (NewState.ulButtonPressed & s_kTouchpadButtonMask && !(m_ControllerState.ulButtonTouched & s_kTouchpadButtonMask)) {
-					k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] = -7;
+					k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] = -5;
 				}
 
 				if (k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] < 0) {
@@ -2618,7 +2623,7 @@ void CPSMoveControllerLatest::UpdateControllerState()
 					k_TouchpadTouched_Count[m_PSMControllerView->ControllerID]++;
 				}
 				else if (m_ControllerState.ulButtonPressed & s_kTouchpadButtonMask) {
-					k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] = 7;
+					k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] = 5;
 				}
 
 				if (k_TouchpadTouched_Count[m_PSMControllerView->ControllerID] > 0) {
@@ -2830,23 +2835,235 @@ void CPSMoveControllerLatest::UpdateControllerState()
 				UpdateBatteryChargeState(m_PSMControllerView->ControllerState.PSMoveState.BatteryValue);
 			}
         } break;
+		case PSMController_DualShock4:
+		{
+			const PSMDualShock4 &clientView = m_PSMControllerView->ControllerState.PSDS4State;
+
+			const bool bStartRealignHMDTriggered =
+				(clientView.ShareButton == PSMButtonState_PRESSED && clientView.OptionsButton == PSMButtonState_PRESSED) ||
+				(clientView.ShareButton == PSMButtonState_PRESSED && clientView.OptionsButton == PSMButtonState_DOWN) ||
+				(clientView.ShareButton == PSMButtonState_DOWN && clientView.OptionsButton == PSMButtonState_PRESSED);
+
+			// See if the recenter button has been held for the requisite amount of time
+			bool bRecenterRequestTriggered = false;
+			{
+				PSMButtonState resetPoseButtonState = clientView.OptionsButton;
+
+				switch (resetPoseButtonState)
+				{
+				case PSMButtonState_PRESSED:
+				{
+					m_resetPoseButtonPressTime = std::chrono::high_resolution_clock::now();
+				} break;
+				case PSMButtonState_DOWN:
+				{
+					if (!m_bResetPoseRequestSent)
+					{
+						const float k_hold_duration_milli = 250.f;
+						std::chrono::time_point<std::chrono::high_resolution_clock> now = std::chrono::high_resolution_clock::now();
+						std::chrono::duration<float, std::milli> pressDurationMilli = now - m_resetPoseButtonPressTime;
+
+						if (pressDurationMilli.count() >= k_hold_duration_milli)
+						{
+							bRecenterRequestTriggered = true;
+						}
+					}
+				} break;
+				case PSMButtonState_RELEASED:
+				{
+					m_bResetPoseRequestSent = false;
+				} break;
+				}
+			}
+
+			// If SHARE was just pressed while and OPTIONS was held or vice versa,
+			// recenter the controller orientation pose and start the realignment of the controller to HMD tracking space.
+			if (bStartRealignHMDTriggered)
+			{
+				DriverLog("CPSMoveControllerLatest::UpdateControllerState(): Calling StartRealignHMDTrackingSpace() in response to controller chord.\n");
+
+				PSM_ResetControllerOrientationAsync(m_PSMControllerView->ControllerID, k_psm_quaternion_identity, nullptr);
+				m_bResetPoseRequestSent = true;
+
+				RealignHMDTrackingSpace();
+			}
+			else if (bRecenterRequestTriggered)
+			{
+				DriverLog("CPSMoveControllerLatest::UpdateControllerState(): Calling ClientPSMoveAPI::reset_orientation() in response to controller button press.\n");
+
+				PSM_ResetControllerOrientationAsync(m_PSMControllerView->ControllerID, k_psm_quaternion_identity, nullptr);
+				m_bResetPoseRequestSent = true;
+			}
+			else
+			{
+				if (clientView.L1Button)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_L1]);
+				if (clientView.L2Button)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_L2]);
+				if (clientView.L3Button)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_L3]);
+				if (clientView.R1Button)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_R1]);
+				if (clientView.R2Button)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_R2]);
+				if (clientView.R3Button)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_R3]);
+
+				if (clientView.CircleButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Circle]);
+				if (clientView.CrossButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Cross]);
+				if (clientView.SquareButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Square]);
+				if (clientView.TriangleButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Triangle]);
+
+				if (clientView.DPadUpButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Up]);
+				if (clientView.DPadDownButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Down]);
+				if (clientView.DPadLeftButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Left]);
+				if (clientView.DPadRightButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Right]);
+
+				if (clientView.OptionsButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Options]);
+				if (clientView.ShareButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Share]);
+				if (clientView.TrackPadButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_Trackpad]);
+				if (clientView.PSButton)
+					NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_DS4][k_EPSButtonID_PS]);
+
+				NewState.rAxis[0].x = clientView.LeftAnalogX;
+				NewState.rAxis[0].y = -clientView.LeftAnalogY;
+
+				NewState.rAxis[1].x = clientView.LeftTriggerValue;
+				NewState.rAxis[1].y = 0.f;
+
+				NewState.rAxis[2].x = clientView.RightAnalogX;
+				NewState.rAxis[2].y = -clientView.RightAnalogY;
+
+				NewState.rAxis[3].x = clientView.RightTriggerValue;
+				NewState.rAxis[3].y = 0.f;
+
+				if (NewState.rAxis[0].x != m_ControllerState.rAxis[0].x || NewState.rAxis[0].y != m_ControllerState.rAxis[0].y) {
+					input->UpdateScalarComponent(xAxis, NewState.rAxis[0].x, 0);
+					input->UpdateScalarComponent(yAxis, NewState.rAxis[0].y, 0);
+				}
+				if (NewState.rAxis[1].x != m_ControllerState.rAxis[1].x)
+					input->UpdateScalarComponent(trigger, NewState.rAxis[1].x, 0);
+				//TODO What does these different Axis means, they probably need to be remapped to XInput components as seen in https://github.com/ValveSoftware/openvr/wiki/IVRDriverInput-Overview
+				/*if (NewState.rAxis[2].x != m_ControllerState.rAxis[2].x || NewState.rAxis[2].y != m_ControllerState.rAxis[2].y)
+					vr::VRServerDriverHost()->TrackedDeviceAxisUpdated(m_unSteamVRTrackedDeviceId, 2, NewState.rAxis[2]);
+				if (NewState.rAxis[3].x != m_ControllerState.rAxis[3].x)
+					vr::VRServerDriverHost()->TrackedDeviceAxisUpdated(m_unSteamVRTrackedDeviceId, 3, NewState.rAxis[3]);*/
+			}
+		} break;
+		case PSMController_Virtual:
+		{
+			const PSMVirtualController &clientView = m_PSMControllerView->ControllerState.VirtualController;
+
+			if (clientView.buttonStates[m_hmdAlignPSButtonID] == PSMButtonState_PRESSED)
+			{
+				DriverLog("CPSMoveControllerLatest::UpdateControllerState(): Calling StartRealignHMDTrackingSpace() in response to controller chord.\n");
+
+				RealignHMDTrackingSpace();
+			}
+			else
+			{
+				int buttonCount = m_PSMControllerView->ControllerState.VirtualController.numButtons;
+				int axisCount = m_PSMControllerView->ControllerState.VirtualController.numAxes;
+
+				for (int buttonIndex = 0; buttonIndex < buttonCount; ++buttonIndex)
+				{
+					if (m_PSMControllerView->ControllerState.VirtualController.buttonStates[buttonIndex])
+					{
+						NewState.ulButtonPressed |= vr::ButtonMaskFromId(psButtonIDToVRButtonID[k_EPSControllerType_Virtual][buttonIndex]);
+					}
+				}
+
+				if (m_virtualTouchpadXAxisIndex >= 0 && m_virtualTouchpadXAxisIndex < axisCount &&
+					m_virtualTouchpadYAxisIndex >= 0 && m_virtualTouchpadYAxisIndex < axisCount)
+				{
+					const unsigned char rawThumbStickX = m_PSMControllerView->ControllerState.VirtualController.axisStates[m_virtualTouchpadXAxisIndex];
+					const unsigned char rawThumbStickY = m_PSMControllerView->ControllerState.VirtualController.axisStates[m_virtualTouchpadYAxisIndex];
+					float thumbStickX = ((float)rawThumbStickX - 127.f) / 127.f;
+					float thumbStickY = ((float)rawThumbStickY - 127.f) / 127.f;
+
+					const float thumbStickAngle = atanf(abs(thumbStickY / thumbStickX));
+					const float thumbStickRadialDist = sqrtf(thumbStickX*thumbStickX + thumbStickY * thumbStickY);
+
+					bool bTouchpadTouched = false;
+					bool bTouchpadPressed = false;
+
+					// Moving a thumbstick outside of the deadzone is consider a touchpad touch
+					if (thumbStickRadialDist >= m_thumbstickDeadzone)
+					{
+						// Rescale the thumbstick position to hide the dead zone
+						const float rescaledRadius = (thumbStickRadialDist - m_thumbstickDeadzone) / (1.f - m_thumbstickDeadzone);
+
+						// Set the thumbstick axis
+						thumbStickX = (rescaledRadius / thumbStickRadialDist) * thumbStickX * abs(cosf(thumbStickAngle));
+						thumbStickY = (rescaledRadius / thumbStickRadialDist) * thumbStickY * abs(sinf(thumbStickAngle));
+
+						// Also make sure the touchpad is considered "touched" 
+						// if the thumbstick is outside of the deadzone
+						bTouchpadTouched = true;
+
+						// If desired, also treat the touch as a press
+						bTouchpadPressed = m_bThumbstickTouchAsPress;
+					}
+
+					if (bTouchpadTouched)
+					{
+						NewState.ulButtonTouched |= s_kTouchpadButtonMask;
+					}
+
+					if (bTouchpadPressed)
+					{
+						NewState.ulButtonPressed |= s_kTouchpadButtonMask;
+					}
+
+					NewState.rAxis[0].x = thumbStickX;
+					NewState.rAxis[0].y = thumbStickY;
+
+					if (NewState.rAxis[0].x != m_ControllerState.rAxis[0].x || NewState.rAxis[0].y != m_ControllerState.rAxis[0].y)
+					{
+						input->UpdateScalarComponent(xAxis, NewState.rAxis[0].x, 0);
+						input->UpdateScalarComponent(yAxis, NewState.rAxis[0].y, 0);
+					}
+				}
+
+				if (m_virtualTriggerAxisIndex >= 0 && m_virtualTriggerAxisIndex < axisCount)
+				{
+					// Remap trigger axis from [0, 255]
+					const float triggerValue = (float)m_PSMControllerView->ControllerState.VirtualController.axisStates[m_virtualTriggerAxisIndex] / 255.f;
+
+					NewState.rAxis[1].x = triggerValue;
+					NewState.rAxis[1].y = 0.f;
+
+					if (NewState.rAxis[1].x != m_ControllerState.rAxis[1].x)
+					{
+						input->UpdateScalarComponent(trigger, NewState.rAxis[1].x, 0);
+					}
+				}
+			}
+		} break;
     }
 
     // All pressed buttons are touched
-    /*NewState.ulButtonTouched |= NewState.ulButtonPressed;
+    NewState.ulButtonTouched |= NewState.ulButtonPressed;
 
-    uint64_t ulChangedTouched = NewState.ulButtonTouched ^ m_ControllerState.ulButtonTouched;
-    uint64_t ulChangedPressed = NewState.ulButtonPressed ^ m_ControllerState.ulButtonPressed;
-
-    SendButtonUpdates( &vr::IVRServerDriverHost::TrackedDeviceButtonTouched, ulChangedTouched & NewState.ulButtonTouched );
-    SendButtonUpdates( &vr::IVRServerDriverHost::TrackedDeviceButtonPressed, ulChangedPressed & NewState.ulButtonPressed );
-    SendButtonUpdates( &vr::IVRServerDriverHost::TrackedDeviceButtonUnpressed, ulChangedPressed & ~NewState.ulButtonPressed );
-    SendButtonUpdates( &vr::IVRServerDriverHost::TrackedDeviceButtonUntouched, ulChangedTouched & ~NewState.ulButtonTouched );*/
-
+	//input->UpdateBooleanComponent(aButtonTouched,, 0);
 	input->UpdateBooleanComponent(aButton, NewState.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_A), 0);
-	input->UpdateBooleanComponent(trackpadPressed, NewState.ulButtonPressed & s_kTouchpadButtonMask, 0);
 	input->UpdateBooleanComponent(trackpadTouched, NewState.ulButtonTouched & s_kTouchpadButtonMask, 0);
-	
+	input->UpdateBooleanComponent(trackpadPressed, NewState.ulButtonPressed & s_kTouchpadButtonMask, 0);
+	input->UpdateBooleanComponent(triggerPress, NewState.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger), 0);
+	input->UpdateBooleanComponent(systemPress, NewState.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_System), 0);
+	input->UpdateBooleanComponent(grip, NewState.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_Grip), 0);
+	input->UpdateBooleanComponent(applicationMenu, NewState.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_ApplicationMenu), 0);
 
 	m_ControllerState = NewState;
 }

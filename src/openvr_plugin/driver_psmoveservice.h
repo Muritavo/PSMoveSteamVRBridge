@@ -258,12 +258,18 @@ public:
 
 private:
 	//Input components
-	vr::VRInputComponentHandle_t aButton;
-	vr::VRInputComponentHandle_t xAxis;
-	vr::VRInputComponentHandle_t yAxis;
 	vr::VRInputComponentHandle_t trackpadPressed;
 	vr::VRInputComponentHandle_t trackpadTouched;
-	vr::VRInputComponentHandle_t trigger;
+	vr::VRInputComponentHandle_t xAxis;
+	vr::VRInputComponentHandle_t yAxis;
+	vr::VRInputComponentHandle_t trigger; //Trigger axis
+	vr::VRInputComponentHandle_t triggerPress;
+	vr::VRInputComponentHandle_t systemPress;
+	vr::VRInputComponentHandle_t grip;
+	vr::VRInputComponentHandle_t applicationMenu;
+
+	vr::VRInputComponentHandle_t aButton;
+	vr::VRInputComponentHandle_t aButtonTouched;
 
 
     typedef void ( vr::IVRServerDriverHost::*ButtonUpdate )( uint32_t unWhichDevice, vr::EVRButtonId eButtonId, double eventTimeOffset );
